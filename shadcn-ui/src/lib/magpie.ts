@@ -1,129 +1,166 @@
-// Enhanced Magpie Payment Integration with Better Error Handling
-export interface PaymentRequest {
+// Magpie.im Payment Integration
+// Based on official checkout session samples and best practices
+
+export interface MagpieConfig {
+  apiKey: string;
+  baseUrl: string;
+  environment: 'sandbox' | 'production';
+}
+
+export interface PaymentMethod {
+  id: string;
+  name: string;
+  icon: string;
+  fee: string;
+  type: 'ewallet' | 'bank' | 'card' | 'crypto';
+}
+
+export interface CustomerInfo {
+  email: string;
+  name: string;
+  phone: string;
+}
+
+export interface PaymentItem {
+  name: string;
+  quantity: number;
+  price: number;
+  description?: string;
+}
+
+export interface CheckoutSessionRequest {
   amount: number;
   currency: string;
   description: string;
-  customer: {
-    email: string;
-    name: string;
-    phone: string;
-  };
-  items: Array<{
-    name: string;
-    quantity: number;
-    price: number;
-  }>;
+  customer: CustomerInfo;
+  items: PaymentItem[];
   paymentMethod: string;
   successUrl: string;
   cancelUrl: string;
   metadata?: Record<string, string>;
 }
 
-export interface PaymentDetails {
-  method: string;
-  amount: number;
-  currency: string;
-  status: string;
-  accountDetails?: {
-    accountName: string;
-    accountNumber: string;
-    bank: string;
-    reference: string;
-  };
-}
-
-export interface PaymentResponse {
+export interface CheckoutSessionResponse {
   success: boolean;
-  paymentId?: string;
-  paymentUrl?: string;
+  sessionId?: string;
+  checkoutUrl?: string;
+  paymentIntentId?: string;
   instructions?: string;
   error?: string;
-  details?: PaymentDetails;
+  expiresAt?: string;
 }
 
-export interface PaymentVerification {
+export interface PaymentStatus {
   success: boolean;
-  status: string;
-  details?: {
-    paymentId: string;
-    verifiedAt: string;
-    method: string;
-  };
-}
-
-export interface WebhookPayload {
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'expired';
   paymentId: string;
-  status: string;
   amount?: number;
   currency?: string;
-  metadata?: Record<string, string>;
+  paidAt?: string;
+  error?: string;
 }
 
-export interface WebhookResponse {
-  success: boolean;
-  message: string;
+export interface WebhookEvent {
+  id: string;
+  type: 'payment.completed' | 'payment.failed' | 'payment.cancelled';
+  data: {
+    paymentId: string;
+    sessionId: string;
+    status: string;
+    amount: number;
+    currency: string;
+    metadata?: Record<string, string>;
+  };
+  createdAt: string;
 }
 
-export const PAYMENT_METHODS = [
+// Magpie.im Configuration
+const MAGPIE_CONFIG: MagpieConfig = {
+  apiKey: process.env.NEXT_PUBLIC_MAGPIE_API_KEY || 'demo_key',
+  baseUrl: process.env.NEXT_PUBLIC_MAGPIE_BASE_URL || 'https://api.magpie.im',
+  environment: (process.env.NODE_ENV === 'production' ? 'production' : 'sandbox') as 'sandbox' | 'production'
+};
+
+// Available Payment Methods (following official examples)
+export const PAYMENT_METHODS: PaymentMethod[] = [
   {
     id: 'gcash',
     name: 'GCash',
     icon: '💙',
     fee: '2.5%',
-    description: 'Pay with GCash e-wallet'
+    type: 'ewallet'
   },
   {
-    id: 'maya',
-    name: 'Maya (PayMaya)',
+    id: 'paymaya',
+    name: 'PayMaya',
+    icon: '💚',
+    fee: '2.5%',
+    type: 'ewallet'
+  },
+  {
+    id: 'grabpay',
+    name: 'GrabPay',
     icon: '🟢',
-    fee: '3.0%',
-    description: 'Pay with Maya e-wallet'
-  },
-  {
-    id: 'card',
-    name: 'Credit/Debit Card',
-    icon: '💳',
-    fee: '3.5%',
-    description: 'Visa, Mastercard, etc.'
+    fee: '2.8%',
+    type: 'ewallet'
   },
   {
     id: 'bank_transfer',
     name: 'Bank Transfer',
     icon: '🏦',
+    fee: '₱15',
+    type: 'bank'
+  },
+  {
+    id: 'credit_card',
+    name: 'Credit/Debit Card',
+    icon: '💳',
+    fee: '3.5%',
+    type: 'card'
+  },
+  {
+    id: 'crypto',
+    name: 'Cryptocurrency',
+    icon: '₿',
     fee: '1.5%',
-    description: 'Direct bank transfer'
+    type: 'crypto'
   }
 ];
 
 class MagpiePaymentService {
-  private baseUrl = 'https://api.magpie.im/v1';
-  private apiKey = 'pk_test_magpie_demo_key_2024'; // Demo key for testing
-  private secretKey = 'sk_test_magpie_demo_secret_2024'; // Demo secret
+  private config: MagpieConfig;
 
-  constructor() {
-    console.log('🔧 Initializing Magpie Payment Service');
-    console.log('📍 Base URL:', this.baseUrl);
-    console.log('🔑 Using demo API key for testing');
+  constructor(config: MagpieConfig) {
+    this.config = config;
   }
 
+  /**
+   * Calculate processing fee based on payment method
+   */
   calculateFee(amount: number, paymentMethod: string): number {
     const method = PAYMENT_METHODS.find(m => m.id === paymentMethod);
-    if (!method) return amount * 0.035; // Default 3.5%
+    if (!method) return 0;
 
-    const feePercentage = parseFloat(method.fee.replace('%', '')) / 100;
-    return amount * feePercentage;
+    if (method.fee.includes('%')) {
+      const percentage = parseFloat(method.fee.replace('%', '')) / 100;
+      return amount * percentage;
+    } else if (method.fee.includes('₱')) {
+      return parseFloat(method.fee.replace('₱', ''));
+    }
+    return 0;
   }
 
-  async createPayment(request: PaymentRequest): Promise<PaymentResponse> {
-    console.log('🚀 Creating payment with Magpie.im');
-    console.log('📋 Payment Request:', JSON.stringify(request, null, 2));
-
+  /**
+   * Create a checkout session following official Magpie.im patterns
+   */
+  async createCheckoutSession(request: CheckoutSessionRequest): Promise<CheckoutSessionResponse> {
     try {
+      console.log('🚀 Creating Magpie checkout session:', request);
+
       // Validate request
       if (!request.amount || request.amount <= 0) {
-        throw new Error('Invalid payment amount');
+        throw new Error('Invalid amount');
       }
-
       if (!request.customer.email || !request.customer.name) {
         throw new Error('Customer information is required');
       }
@@ -132,213 +169,203 @@ class MagpiePaymentService {
       const fee = this.calculateFee(request.amount, request.paymentMethod);
       const totalAmount = request.amount + fee;
 
-      console.log('💰 Payment breakdown:');
-      console.log(`  - Subtotal: ₱${request.amount.toLocaleString()}`);
-      console.log(`  - Fee (${PAYMENT_METHODS.find(m => m.id === request.paymentMethod)?.fee}): ₱${fee.toFixed(2)}`);
-      console.log(`  - Total: ₱${totalAmount.toLocaleString()}`);
-
-      // Simulate different payment method responses
-      const paymentId = `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      
-      // For demo purposes, simulate different scenarios based on payment method
-      if (request.paymentMethod === 'gcash') {
-        console.log('💙 Processing GCash payment...');
-        
-        // Simulate GCash success
-        const response: PaymentResponse = {
-          success: true,
-          paymentId,
-          paymentUrl: `https://gcash.com/pay/${paymentId}`,
-          instructions: 'You will be redirected to GCash to complete your payment.',
-          details: {
-            method: 'gcash',
-            amount: totalAmount,
-            currency: request.currency,
-            status: 'pending'
-          }
-        };
-
-        console.log('✅ GCash payment created successfully:', response);
-        return response;
-
-      } else if (request.paymentMethod === 'maya') {
-        console.log('🟢 Processing Maya payment...');
-        
-        const response: PaymentResponse = {
-          success: true,
-          paymentId,
-          paymentUrl: `https://maya.ph/pay/${paymentId}`,
-          instructions: 'You will be redirected to Maya to complete your payment.',
-          details: {
-            method: 'maya',
-            amount: totalAmount,
-            currency: request.currency,
-            status: 'pending'
-          }
-        };
-
-        console.log('✅ Maya payment created successfully:', response);
-        return response;
-
-      } else if (request.paymentMethod === 'card') {
-        console.log('💳 Processing card payment...');
-        
-        const response: PaymentResponse = {
-          success: true,
-          paymentId,
-          paymentUrl: `https://checkout.magpie.im/pay/${paymentId}`,
-          instructions: 'You will be redirected to our secure payment page.',
-          details: {
-            method: 'card',
-            amount: totalAmount,
-            currency: request.currency,
-            status: 'pending'
-          }
-        };
-
-        console.log('✅ Card payment created successfully:', response);
-        return response;
-
-      } else if (request.paymentMethod === 'bank_transfer') {
-        console.log('🏦 Processing bank transfer...');
-        
-        // For bank transfer, provide instructions instead of redirect
-        const response: PaymentResponse = {
-          success: true,
-          paymentId,
-          instructions: `Bank Transfer Instructions:
-          
-Account Name: DRL Solutions
-Account Number: 1234567890
-Bank: BPI
-Amount: ₱${totalAmount.toLocaleString()}
-Reference: ${paymentId}
-
-Please send proof of payment to orders@drl-solutions.com`,
-          details: {
-            method: 'bank_transfer',
-            amount: totalAmount,
-            currency: request.currency,
-            status: 'pending',
-            accountDetails: {
-              accountName: 'DRL Solutions',
-              accountNumber: '1234567890',
-              bank: 'BPI',
-              reference: paymentId
-            }
-          }
-        };
-
-        console.log('✅ Bank transfer payment created successfully:', response);
-        return response;
-
-      } else {
-        throw new Error(`Unsupported payment method: ${request.paymentMethod}`);
-      }
-
-    } catch (error) {
-      console.error('❌ Payment creation failed:', error);
-      
-      const errorResponse: PaymentResponse = {
-        success: false,
-        error: error instanceof Error ? error.message : 'Payment processing failed',
-        details: {
-          method: request.paymentMethod,
-          amount: request.amount,
-          currency: request.currency,
-          status: 'failed'
-        }
+      // Prepare checkout session payload (following official examples)
+      const sessionPayload = {
+        amount: Math.round(totalAmount * 100), // Convert to cents
+        currency: request.currency.toUpperCase(),
+        description: request.description,
+        payment_method: request.paymentMethod,
+        customer: {
+          email: request.customer.email,
+          name: request.customer.name,
+          phone: request.customer.phone
+        },
+        line_items: request.items.map(item => ({
+          name: item.name,
+          quantity: item.quantity,
+          amount: Math.round(item.price * 100), // Convert to cents
+          description: item.description || item.name
+        })),
+        success_url: request.successUrl,
+        cancel_url: request.cancelUrl,
+        metadata: {
+          ...request.metadata,
+          integration: 'drl-solutions',
+          version: '1.0.0'
+        },
+        expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString() // 30 minutes
       };
 
-      console.log('💥 Error response:', errorResponse);
-      return errorResponse;
-    }
-  }
+      // Make API call to Magpie.im
+      const response = await fetch(`${this.config.baseUrl}/v1/checkout/sessions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`,
+          'X-Magpie-Version': '2024-01-01'
+        },
+        body: JSON.stringify(sessionPayload)
+      });
 
-  async verifyPayment(paymentId: string): Promise<PaymentVerification> {
-    console.log('🔍 Verifying payment:', paymentId);
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
+      }
 
-    try {
-      // Simulate payment verification
-      // In a real implementation, this would call the Magpie API
-      
-      // For demo purposes, randomly simulate different statuses
-      const statuses = ['completed', 'pending', 'failed'];
-      const randomStatus = statuses[Math.floor(Math.random() * statuses.length)];
-      
-      console.log(`✅ Payment ${paymentId} status: ${randomStatus}`);
-      
+      const data = await response.json();
+      console.log('✅ Checkout session created:', data);
+
       return {
         success: true,
-        status: randomStatus,
-        details: {
-          paymentId,
-          verifiedAt: new Date().toISOString(),
-          method: 'demo_verification'
-        }
+        sessionId: data.id,
+        checkoutUrl: data.checkout_url,
+        paymentIntentId: data.payment_intent_id,
+        instructions: data.instructions,
+        expiresAt: data.expires_at
       };
 
     } catch (error) {
-      console.error('❌ Payment verification failed:', error);
+      console.error('❌ Checkout session creation failed:', error);
+      
       return {
         success: false,
-        status: 'error',
-        details: {
-          paymentId,
-          verifiedAt: new Date().toISOString(),
-          method: 'error'
-        }
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
       };
     }
   }
 
-  async handleWebhook(payload: WebhookPayload): Promise<WebhookResponse> {
-    console.log('🔔 Processing webhook:', payload);
-
+  /**
+   * Retrieve payment status following official patterns
+   */
+  async getPaymentStatus(sessionId: string): Promise<PaymentStatus> {
     try {
-      // Validate webhook payload
-      if (!payload.paymentId || !payload.status) {
-        throw new Error('Invalid webhook payload');
+      console.log('🔍 Checking payment status for session:', sessionId);
+
+      const response = await fetch(`${this.config.baseUrl}/v1/checkout/sessions/${sessionId}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${this.config.apiKey}`,
+          'X-Magpie-Version': '2024-01-01'
+        }
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
       }
 
-      // Process webhook based on status
-      switch (payload.status) {
-        case 'completed':
-          console.log('✅ Payment completed via webhook');
-          // Here you would update your database, send confirmation emails, etc.
+      const data = await response.json();
+      console.log('📊 Payment status retrieved:', data);
+
+      return {
+        success: true,
+        status: data.payment_status,
+        paymentId: data.payment_intent_id,
+        amount: data.amount_total / 100, // Convert from cents
+        currency: data.currency,
+        paidAt: data.paid_at
+      };
+
+    } catch (error) {
+      console.error('❌ Payment status check failed:', error);
+      
+      return {
+        success: false,
+        status: 'failed',
+        paymentId: sessionId,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+
+  /**
+   * Verify webhook signature for security (browser-compatible version)
+   */
+  verifyWebhookSignature(payload: string, signature: string, secret: string): boolean {
+    try {
+      // For browser environment, we'll use a simple comparison
+      // In production, this should be handled server-side with proper crypto
+      console.log('⚠️ Webhook signature verification should be handled server-side');
+      
+      // Simple validation for demo purposes
+      return signature.length > 0 && secret.length > 0;
+    } catch (error) {
+      console.error('❌ Webhook signature verification failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Handle webhook events
+   */
+  async handleWebhook(event: WebhookEvent): Promise<boolean> {
+    try {
+      console.log('📨 Processing webhook event:', event);
+
+      switch (event.type) {
+        case 'payment.completed':
+          console.log('✅ Payment completed:', event.data.paymentId);
+          // Handle successful payment
           break;
         
-        case 'failed':
-          console.log('❌ Payment failed via webhook');
+        case 'payment.failed':
+          console.log('❌ Payment failed:', event.data.paymentId);
           // Handle failed payment
           break;
         
-        case 'cancelled':
-          console.log('🚫 Payment cancelled via webhook');
+        case 'payment.cancelled':
+          console.log('🚫 Payment cancelled:', event.data.paymentId);
           // Handle cancelled payment
           break;
         
         default:
-          console.log(`ℹ️ Payment status updated: ${payload.status}`);
+          console.log('ℹ️ Unknown webhook event type:', event.type);
       }
 
-      return {
-        success: true,
-        message: 'Webhook processed successfully'
-      };
-
+      return true;
     } catch (error) {
-      console.error('❌ Webhook processing failed:', error);
-      return {
-        success: false,
-        message: error instanceof Error ? error.message : 'Webhook processing failed'
-      };
+      console.error('❌ Webhook handling failed:', error);
+      return false;
     }
+  }
+
+  /**
+   * Get configuration info
+   */
+  getConfig(): MagpieConfig {
+    return { ...this.config };
   }
 }
 
 // Export singleton instance
-export const magpiePayment = new MagpiePaymentService();
+export const magpiePayment = new MagpiePaymentService(MAGPIE_CONFIG);
 
-// Export for testing
-export { MagpiePaymentService };
+// Legacy compatibility - maintain existing interface
+export const createPayment = (request: CheckoutSessionRequest) => 
+  magpiePayment.createCheckoutSession(request).then(response => ({
+    success: response.success,
+    paymentId: response.sessionId,
+    paymentUrl: response.checkoutUrl,
+    instructions: response.instructions,
+    error: response.error,
+    details: response.paymentIntentId ? {
+      accountDetails: {
+        reference: response.paymentIntentId
+      }
+    } : undefined
+  }));
+
+export const verifyPayment = (paymentId: string) =>
+  magpiePayment.getPaymentStatus(paymentId);
+
+// Export types for external use
+export type {
+  MagpieConfig,
+  PaymentMethod,
+  CustomerInfo,
+  PaymentItem,
+  CheckoutSessionRequest,
+  CheckoutSessionResponse,
+  PaymentStatus,
+  WebhookEvent
+};

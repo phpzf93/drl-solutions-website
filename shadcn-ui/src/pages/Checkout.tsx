@@ -7,7 +7,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useStore } from '@/store/useStore';
 import { useToast } from '@/hooks/use-toast';
-import { magpiePayment, PAYMENT_METHODS, PaymentDetails } from '@/lib/magpie';
+import { 
+  magpiePayment, 
+  PAYMENT_METHODS, 
+  CheckoutSessionRequest,
+  CheckoutSessionResponse,
+  PaymentStatus
+} from '@/lib/magpie';
 import { 
   CreditCard, 
   Trash2, 
@@ -20,7 +26,8 @@ import {
   AlertCircle,
   CheckCircle,
   Loader2,
-  Copy
+  ExternalLink,
+  Clock
 } from 'lucide-react';
 import { 
   AnimatedPage, 
@@ -44,10 +51,12 @@ export default function Checkout() {
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('gcash');
   const [processing, setProcessing] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [paymentInstructions, setPaymentInstructions] = useState<string | null>(null);
-  const [paymentDetails, setPaymentDetails] = useState<PaymentDetails | null>(null);
-  const [awaitingPayment, setAwaitingPayment] = useState(false);
-  const [currentPaymentId, setCurrentPaymentId] = useState<string | null>(null);
+  
+  // Checkout session state
+  const [checkoutSession, setCheckoutSession] = useState<CheckoutSessionResponse | null>(null);
+  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus | null>(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   const subtotal = getCartTotal();
   const selectedMethod = PAYMENT_METHODS.find(method => method.id === selectedPaymentMethod);
@@ -86,35 +95,7 @@ export default function Checkout() {
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast({
-      title: "Copied!",
-      description: "Text copied to clipboard",
-    });
-  };
-
-  const verifyPaymentStatus = async (paymentId: string): Promise<boolean> => {
-    try {
-      console.log('🔍 Verifying payment status for:', paymentId);
-      const verification = await magpiePayment.verifyPayment(paymentId);
-      
-      if (verification.success && verification.status === 'completed') {
-        console.log('✅ Payment verified as completed');
-        return true;
-      } else {
-        console.log('⏳ Payment still pending or failed:', verification.status);
-        return false;
-      }
-    } catch (error) {
-      console.error('❌ Payment verification error:', error);
-      return false;
-    }
-  };
-
-  const handlePayment = async () => {
-    console.log('🛒 Starting payment process...');
-    
+  const createCheckoutSession = async () => {
     if (!validateForm()) {
       toast({
         title: "Please fill in all required fields",
@@ -125,11 +106,12 @@ export default function Checkout() {
     }
 
     setProcessing(true);
-    setPaymentInstructions(null);
-    setPaymentDetails(null);
+    setCheckoutSession(null);
+    setPaymentStatus(null);
+    setSessionExpired(false);
 
     try {
-      const paymentRequest = {
+      const sessionRequest: CheckoutSessionRequest = {
         amount: subtotal,
         currency: 'PHP',
         description: `DRL Solutions - ${cart.length} item(s)`,
@@ -141,7 +123,8 @@ export default function Checkout() {
         items: cart.map(item => ({
           name: item.product.name,
           quantity: item.quantity,
-          price: item.product.price
+          price: item.product.price,
+          description: `${item.product.name} - Digital Service`
         })),
         paymentMethod: selectedPaymentMethod,
         successUrl: `${window.location.origin}/order-success`,
@@ -150,23 +133,22 @@ export default function Checkout() {
           customer_name: customerInfo.name,
           customer_email: customerInfo.email,
           customer_phone: customerInfo.phone,
-          items_count: cart.length.toString()
+          items_count: cart.length.toString(),
+          source: 'drl-solutions-checkout'
         }
       };
 
-      console.log('🚀 Processing payment with request:', paymentRequest);
+      const response = await magpiePayment.createCheckoutSession(sessionRequest);
 
-      const response = await magpiePayment.createPayment(paymentRequest);
-      console.log('📨 Payment response received:', response);
-
-      if (response.success && response.paymentId) {
-        // Create order record with pending status
+      if (response.success && response.sessionId) {
+        setCheckoutSession(response);
+        
         const order = {
-          id: response.paymentId,
+          id: response.sessionId,
           user_id: 'guest',
           total_amount: total,
           status: 'pending' as const,
-          payment_intent_id: response.paymentId,
+          payment_intent_id: response.paymentIntentId || response.sessionId,
           created_at: new Date().toISOString(),
           items: cart.map(item => ({
             id: `item_${Date.now()}_${Math.random()}`,
@@ -180,124 +162,113 @@ export default function Checkout() {
         addOrder(order);
         
         toast({
-          title: "Payment Initiated Successfully!",
-          description: response.instructions || "Payment is being processed...",
+          title: "Checkout Session Created!",
+          description: response.checkoutUrl 
+            ? "Click the payment button to complete your purchase."
+            : "Follow the payment instructions to complete your purchase.",
         });
 
-        // Handle different payment method responses
-        if (response.paymentUrl) {
-          console.log('🔗 Payment URL provided:', response.paymentUrl);
-          
-          // Set awaiting payment state instead of auto-redirect
-          setCurrentPaymentId(response.paymentId);
-          setAwaitingPayment(true);
-          
-          toast({
-            title: "Payment Gateway Ready",
-            description: "Complete your payment in the payment gateway, then click 'Verify Payment' to continue.",
-            duration: 8000,
-          });
-          
-        } else if (response.instructions) {
-          // For bank transfer or other manual methods
-          console.log('📋 Showing payment instructions');
-          setPaymentInstructions(response.instructions);
-          setPaymentDetails(response.details || null);
-          
-          toast({
-            title: "Payment Instructions Provided",
-            description: "Please follow the instructions below to complete your payment.",
-          });
-          
-        } else {
-          // This should not happen without proper payment validation
-          console.warn('⚠️ No payment URL or instructions provided');
-          toast({
-            title: "Payment Setup Incomplete",
-            description: "Please try again or contact support.",
-            variant: "destructive",
-          });
-        }
-        
       } else {
-        throw new Error(response.error || 'Payment processing failed');
+        throw new Error(response.error || 'Failed to create checkout session');
       }
     } catch (error) {
-      console.error('❌ Payment error:', error);
-      
-      let errorMessage = 'Payment processing failed. Please try again.';
+      let errorMessage = 'Failed to create checkout session. Please try again.';
       
       if (error instanceof Error) {
         errorMessage = error.message;
       }
       
       toast({
-        title: "Payment Failed",
+        title: "Checkout Failed",
         description: errorMessage,
         variant: "destructive",
       });
       
-      setPaymentInstructions(null);
-      setPaymentDetails(null);
     } finally {
       setProcessing(false);
     }
   };
 
-  const proceedWithManualPayment = () => {
-    // For manual payments like bank transfer, proceed to success page
-    clearCart();
-    navigate(`/order-success/${paymentDetails?.accountDetails?.reference || 'manual'}`, {
-      state: {
-        paymentMethod: selectedPaymentMethod,
-        paymentId: paymentDetails?.accountDetails?.reference,
-        amount: total,
-        instructions: paymentInstructions,
-        isManualPayment: true
-      }
-    });
-  };
-
   const checkPaymentStatus = async () => {
-    if (!currentPaymentId) return;
+    if (!checkoutSession?.sessionId) return;
     
-    setProcessing(true);
+    setCheckingStatus(true);
     
     try {
-      const isCompleted = await verifyPaymentStatus(currentPaymentId);
+      const status = await magpiePayment.getPaymentStatus(checkoutSession.sessionId);
+      setPaymentStatus(status);
       
-      if (isCompleted) {
-        // Payment verified as completed
+      if (status.success && status.status === 'completed') {
+        toast({
+          title: "Payment Completed!",
+          description: "Your payment has been processed successfully.",
+        });
+        
         clearCart();
-        navigate(`/order-success/${currentPaymentId}`, {
+        navigate(`/order-success/${checkoutSession.sessionId}`, {
           state: {
             paymentMethod: selectedPaymentMethod,
-            paymentId: currentPaymentId,
-            amount: total,
-            verified: true
+            paymentId: status.paymentId,
+            amount: status.amount || total,
+            verified: true,
+            paidAt: status.paidAt
           }
         });
+        
+      } else if (status.status === 'failed') {
+        toast({
+          title: "Payment Failed",
+          description: status.error || "Your payment could not be processed.",
+          variant: "destructive",
+        });
+        
+      } else if (status.status === 'cancelled') {
+        toast({
+          title: "Payment Cancelled",
+          description: "Your payment was cancelled.",
+          variant: "destructive",
+        });
+        
       } else {
         toast({
-          title: "Payment Not Yet Completed",
-          description: "Please complete your payment first, then check again.",
-          variant: "destructive",
+          title: "Payment Pending",
+          description: "Your payment is still being processed. Please wait a moment and check again.",
         });
       }
     } catch (error) {
       toast({
-        title: "Unable to Verify Payment",
+        title: "Unable to Check Payment Status",
         description: "Please try again or contact support if payment was completed.",
         variant: "destructive",
       });
     } finally {
-      setProcessing(false);
+      setCheckingStatus(false);
     }
+  };
+
+  const openPaymentGateway = () => {
+    if (checkoutSession?.checkoutUrl) {
+      window.open(checkoutSession.checkoutUrl, '_blank', 'noopener,noreferrer');
+      toast({
+        title: "Payment Gateway Opened",
+        description: "Complete your payment in the new tab, then check status here.",
+        duration: 5000,
+      });
+    }
+  };
+
+  const resetCheckout = () => {
+    setCheckoutSession(null);
+    setPaymentStatus(null);
+    setSessionExpired(false);
+    setErrors({});
   };
 
   if (cart.length === 0) {
     return null;
   }
+
+  const hasActiveSession = checkoutSession && !sessionExpired;
 
   return (
     <AnimatedPage className="bg-white">
@@ -308,7 +279,6 @@ export default function Checkout() {
           animate="animate"
           className="max-w-6xl mx-auto"
         >
-          {/* Header */}
           <motion.div variants={fadeInUp} className="text-center mb-12">
             <h1 className="text-4xl md:text-5xl font-bold text-black mb-4">
               Checkout
@@ -318,105 +288,55 @@ export default function Checkout() {
             </p>
           </motion.div>
 
-          {/* Payment Status Alert */}
           <AnimatePresence>
-            {awaitingPayment && (
+            {hasActiveSession && (
               <motion.div
                 initial={{ opacity: 0, y: -20 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -20 }}
                 className="mb-8"
               >
-                <Card className="bg-yellow-50 border-yellow-200">
+                <Card className="bg-blue-50 border-blue-200">
                   <CardContent className="p-6">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-3">
-                        <AlertCircle className="h-6 w-6 text-yellow-600" />
+                        <CheckCircle className="h-6 w-6 text-blue-600" />
                         <div>
-                          <h3 className="text-yellow-800 font-medium">Payment Pending</h3>
-                          <p className="text-yellow-700 text-sm">Complete your payment, then verify below</p>
+                          <h3 className="text-blue-800 font-medium">Payment Session Active</h3>
+                          <p className="text-blue-700 text-sm">
+                            {checkoutSession?.checkoutUrl 
+                              ? "Click 'Pay Now' to complete your payment, then check status."
+                              : "Follow the payment instructions, then check status."
+                            }
+                          </p>
                         </div>
                       </div>
-                      <Button
-                        onClick={checkPaymentStatus}
-                        disabled={processing}
-                        className="bg-yellow-600 hover:bg-yellow-700 text-white"
-                      >
-                        {processing ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            Checking...
-                          </>
-                        ) : (
-                          'Verify Payment'
+                      <div className="flex space-x-2">
+                        {checkoutSession?.checkoutUrl && (
+                          <Button
+                            onClick={openPaymentGateway}
+                            className="bg-blue-600 hover:bg-blue-700 text-white"
+                          >
+                            <ExternalLink className="mr-2 h-4 w-4" />
+                            Pay Now
+                          </Button>
                         )}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* Payment Instructions Modal */}
-          <AnimatePresence>
-            {paymentInstructions && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
-              >
-                <Card className="bg-white max-w-md w-full max-h-[80vh] overflow-y-auto">
-                  <CardHeader>
-                    <CardTitle className="text-black flex items-center">
-                      <CheckCircle className="mr-2 h-5 w-5 text-green-500" />
-                      Payment Instructions
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="bg-gray-50 p-4 rounded-lg">
-                      <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono">
-                        {paymentInstructions}
-                      </pre>
-                    </div>
-                    
-                    {paymentDetails?.accountDetails && (
-                      <div className="space-y-2">
-                        <div className="flex justify-between items-center">
-                          <span className="text-sm text-gray-600">Reference:</span>
-                          <div className="flex items-center space-x-2">
-                            <code className="bg-gray-100 px-2 py-1 rounded text-sm">
-                              {paymentDetails.accountDetails.reference}
-                            </code>
-                            <button
-                              onClick={() => copyToClipboard(paymentDetails.accountDetails.reference)}
-                              className="text-blue-500 hover:text-blue-700"
-                            >
-                              <Copy className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </div>
+                        <Button
+                          onClick={checkPaymentStatus}
+                          disabled={checkingStatus}
+                          variant="outline"
+                          className="border-blue-300"
+                        >
+                          {checkingStatus ? (
+                            <>
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              Checking...
+                            </>
+                          ) : (
+                            'Check Status'
+                          )}
+                        </Button>
                       </div>
-                    )}
-                    
-                    <div className="flex space-x-3">
-                      <Button
-                        onClick={proceedWithManualPayment}
-                        className="flex-1 bg-gradient-to-r from-red-600 to-red-800 hover:from-red-700 hover:to-red-900 text-white"
-                      >
-                        I've Made the Payment
-                      </Button>
-                      <Button
-                        onClick={() => {
-                          setPaymentInstructions(null);
-                          setPaymentDetails(null);
-                        }}
-                        variant="outline"
-                        className="border-gray-300"
-                      >
-                        Cancel
-                      </Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -425,7 +345,6 @@ export default function Checkout() {
           </AnimatePresence>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Order Summary */}
             <AnimatedCard>
               <Card className="bg-white border-gray-200 shadow-lg">
                 <CardHeader>
@@ -466,6 +385,7 @@ export default function Checkout() {
                               whileTap={{ scale: 0.9 }}
                               onClick={() => updateCartQuantity(item.product.id, item.quantity - 1)}
                               className="p-1 text-gray-600 hover:text-red-500 transition-colors"
+                              disabled={hasActiveSession}
                             >
                               <Minus className="h-4 w-4" />
                             </motion.button>
@@ -482,6 +402,7 @@ export default function Checkout() {
                               whileTap={{ scale: 0.9 }}
                               onClick={() => updateCartQuantity(item.product.id, item.quantity + 1)}
                               className="p-1 text-gray-600 hover:text-red-500 transition-colors"
+                              disabled={hasActiveSession}
                             >
                               <Plus className="h-4 w-4" />
                             </motion.button>
@@ -492,6 +413,7 @@ export default function Checkout() {
                             whileTap={{ scale: 0.9 }}
                             onClick={() => removeFromCart(item.product.id)}
                             className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+                            disabled={hasActiveSession}
                           >
                             <Trash2 className="h-4 w-4" />
                           </motion.button>
@@ -500,7 +422,6 @@ export default function Checkout() {
                     ))}
                   </AnimatePresence>
 
-                  {/* Totals */}
                   <div className="space-y-3 pt-6">
                     <div className="flex justify-between text-gray-600">
                       <span>Subtotal</span>
@@ -524,7 +445,6 @@ export default function Checkout() {
               </Card>
             </AnimatedCard>
 
-            {/* Payment Form */}
             <AnimatedCard delay={0.2}>
               <Card className="bg-white border-gray-200 shadow-lg">
                 <CardHeader>
@@ -534,7 +454,6 @@ export default function Checkout() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  {/* Customer Information */}
                   <div className="space-y-4">
                     <h3 className="text-black font-medium">Customer Information</h3>
                     
@@ -551,9 +470,10 @@ export default function Checkout() {
                           value={customerInfo.name}
                           onChange={(e) => handleInputChange('name', e.target.value)}
                           placeholder="Enter your full name"
+                          disabled={hasActiveSession}
                           className={`pl-10 bg-white border-gray-300 text-black placeholder:text-gray-400 focus:border-red-500 focus:ring-2 focus:ring-red-500/20 ${
                             errors.name ? 'border-red-400' : ''
-                          }`}
+                          } ${hasActiveSession ? 'opacity-50' : ''}`}
                         />
                       </div>
                       <AnimatePresence>
@@ -586,9 +506,10 @@ export default function Checkout() {
                           value={customerInfo.email}
                           onChange={(e) => handleInputChange('email', e.target.value)}
                           placeholder="Enter your email address"
+                          disabled={hasActiveSession}
                           className={`pl-10 bg-white border-gray-300 text-black placeholder:text-gray-400 focus:border-red-500 focus:ring-2 focus:ring-red-500/20 ${
                             errors.email ? 'border-red-400' : ''
-                          }`}
+                          } ${hasActiveSession ? 'opacity-50' : ''}`}
                         />
                       </div>
                       <AnimatePresence>
@@ -620,9 +541,10 @@ export default function Checkout() {
                           value={customerInfo.phone}
                           onChange={(e) => handleInputChange('phone', e.target.value)}
                           placeholder="Enter your phone number"
+                          disabled={hasActiveSession}
                           className={`pl-10 bg-white border-gray-300 text-black placeholder:text-gray-400 focus:border-red-500 focus:ring-2 focus:ring-red-500/20 ${
                             errors.phone ? 'border-red-400' : ''
-                          }`}
+                          } ${hasActiveSession ? 'opacity-50' : ''}`}
                         />
                       </div>
                       <AnimatePresence>
@@ -642,7 +564,6 @@ export default function Checkout() {
                     </motion.div>
                   </div>
 
-                  {/* Payment Methods */}
                   <div className="space-y-4">
                     <h3 className="text-black font-medium">Payment Method</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -654,14 +575,15 @@ export default function Checkout() {
                           transition={{ delay: 0.6 + index * 0.1 }}
                         >
                           <motion.button
-                            whileHover={{ scale: 1.02 }}
-                            whileTap={{ scale: 0.98 }}
-                            onClick={() => setSelectedPaymentMethod(method.id)}
+                            whileHover={{ scale: hasActiveSession ? 1 : 1.02 }}
+                            whileTap={{ scale: hasActiveSession ? 1 : 0.98 }}
+                            onClick={() => !hasActiveSession && setSelectedPaymentMethod(method.id)}
+                            disabled={hasActiveSession}
                             className={`w-full p-4 rounded-lg border transition-all ${
                               selectedPaymentMethod === method.id
                                 ? 'border-red-500 bg-red-50'
                                 : 'border-gray-200 bg-white hover:bg-gray-50'
-                            }`}
+                            } ${hasActiveSession ? 'opacity-50 cursor-not-allowed' : ''}`}
                           >
                             <div className="flex items-center justify-between">
                               <div className="flex items-center space-x-3">
@@ -689,57 +611,65 @@ export default function Checkout() {
                     </div>
                   </div>
 
-                  {/* Payment Button */}
                   <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: 0.8 }}
                   >
-                    <Button
-                      onClick={handlePayment}
-                      disabled={processing || awaitingPayment}
-                      className="w-full bg-gradient-to-r from-red-600 to-red-800 hover:from-red-700 hover:to-red-900 text-white py-6 text-lg font-semibold"
-                    >
-                      <AnimatePresence mode="wait">
-                        {processing ? (
-                          <motion.div
-                            key="processing"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            className="flex items-center"
+                    {!hasActiveSession ? (
+                      <Button
+                        onClick={createCheckoutSession}
+                        disabled={processing}
+                        className="w-full bg-gradient-to-r from-red-600 to-red-800 hover:from-red-700 hover:to-red-900 text-white py-6 text-lg font-semibold"
+                      >
+                        <AnimatePresence mode="wait">
+                          {processing ? (
+                            <motion.div
+                              key="processing"
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                              className="flex items-center"
+                            >
+                              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                              Creating Session...
+                            </motion.div>
+                          ) : (
+                            <motion.div
+                              key="create"
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                              className="flex items-center"
+                            >
+                              <CreditCard className="mr-2 h-5 w-5" />
+                              Create Payment Session - ₱{total.toLocaleString()}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </Button>
+                    ) : (
+                      <div className="space-y-3">
+                        {checkoutSession?.checkoutUrl && (
+                          <Button
+                            onClick={openPaymentGateway}
+                            className="w-full bg-gradient-to-r from-blue-600 to-blue-800 hover:from-blue-700 hover:to-blue-900 text-white py-6 text-lg font-semibold"
                           >
-                            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                            Processing Payment...
-                          </motion.div>
-                        ) : awaitingPayment ? (
-                          <motion.div
-                            key="awaiting"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            className="flex items-center"
-                          >
-                            <AlertCircle className="mr-2 h-5 w-5" />
-                            Complete Payment First
-                          </motion.div>
-                        ) : (
-                          <motion.div
-                            key="pay"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            exit={{ opacity: 0 }}
-                            className="flex items-center"
-                          >
-                            <CreditCard className="mr-2 h-5 w-5" />
-                            Pay ₱{total.toLocaleString()}
-                          </motion.div>
+                            <ExternalLink className="mr-2 h-5 w-5" />
+                            Complete Payment - ₱{total.toLocaleString()}
+                          </Button>
                         )}
-                      </AnimatePresence>
-                    </Button>
+                        <Button
+                          onClick={resetCheckout}
+                          variant="outline"
+                          className="w-full border-gray-300 py-3"
+                        >
+                          Start New Payment
+                        </Button>
+                      </div>
+                    )}
                   </motion.div>
 
-                  {/* Security Notice */}
                   <motion.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
