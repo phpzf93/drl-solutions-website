@@ -19,13 +19,49 @@ export interface PaymentRequest {
   metadata?: Record<string, string>;
 }
 
+export interface PaymentDetails {
+  method: string;
+  amount: number;
+  currency: string;
+  status: string;
+  accountDetails?: {
+    accountName: string;
+    accountNumber: string;
+    bank: string;
+    reference: string;
+  };
+}
+
 export interface PaymentResponse {
   success: boolean;
   paymentId?: string;
   paymentUrl?: string;
   instructions?: string;
   error?: string;
-  details?: any;
+  details?: PaymentDetails;
+}
+
+export interface PaymentVerification {
+  success: boolean;
+  status: string;
+  details?: {
+    paymentId: string;
+    verifiedAt: string;
+    method: string;
+  };
+}
+
+export interface WebhookPayload {
+  paymentId: string;
+  status: string;
+  amount?: number;
+  currency?: string;
+  metadata?: Record<string, string>;
+}
+
+export interface WebhookResponse {
+  success: boolean;
+  message: string;
 }
 
 export const PAYMENT_METHODS = [
@@ -207,8 +243,10 @@ Please send proof of payment to orders@drl-solutions.com`,
         success: false,
         error: error instanceof Error ? error.message : 'Payment processing failed',
         details: {
-          timestamp: new Date().toISOString(),
-          request: request
+          method: request.paymentMethod,
+          amount: request.amount,
+          currency: request.currency,
+          status: 'failed'
         }
       };
 
@@ -217,7 +255,7 @@ Please send proof of payment to orders@drl-solutions.com`,
     }
   }
 
-  async verifyPayment(paymentId: string): Promise<{ success: boolean; status: string; details?: any }> {
+  async verifyPayment(paymentId: string): Promise<PaymentVerification> {
     console.log('🔍 Verifying payment:', paymentId);
 
     try {
@@ -245,12 +283,16 @@ Please send proof of payment to orders@drl-solutions.com`,
       return {
         success: false,
         status: 'error',
-        details: { error: error instanceof Error ? error.message : 'Verification failed' }
+        details: {
+          paymentId,
+          verifiedAt: new Date().toISOString(),
+          method: 'error'
+        }
       };
     }
   }
 
-  async handleWebhook(payload: any): Promise<{ success: boolean; message: string }> {
+  async handleWebhook(payload: WebhookPayload): Promise<WebhookResponse> {
     console.log('🔔 Processing webhook:', payload);
 
     try {

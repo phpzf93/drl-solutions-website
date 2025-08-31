@@ -1,7 +1,43 @@
 {
-  "timeline_index": 2,
+  "timeline_index": 14,
+  "planner": {
+    "Team Leader": {
+      "1": {
+        "task_id": "1",
+        "dependent_task_ids": [],
+        "instruction": "Investigate and fix the checkout payment flow issue. The user reports that checkout completes successfully without initiating actual payment processing. Check the Magpie.im payment integration, ensure proper payment validation, and verify that real payment processing is occurring before order completion. The project is located at /data/chats/6062d7dd78544e279cb7fe98c544646b/workspace/shadcn-ui/",
+        "task_type": "general",
+        "code": "",
+        "result": "",
+        "is_success": false,
+        "is_finished": true,
+        "assignee": "Alex",
+        "start_at": 1756649134.0570915,
+        "end_at": 1756649607.1227596
+      },
+      "current_task_id": "1"
+    }
+  },
+  "gallery_last_file": {},
+  "timeline_status": {
+    "3": 1,
+    "4": 1,
+    "5": 1,
+    "6": 1,
+    "7": 1,
+    "8": 0,
+    "9": 1,
+    "10": 1,
+    "11": 1,
+    "12": 0,
+    "13": 1,
+    "14": 1
+  },
+  "preview_servers": {},
   "preview_server": {
     "project_dir": "/workspace/shadcn-ui",
+    "status": "initializing",
+    "config_path": ".mgx/config.yaml",
     "timeline_index": 2
   }
 }
