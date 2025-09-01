@@ -4,6 +4,7 @@ import path from 'path'
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  base: '/drl-solutions-website/', // GitHub Pages repo name
   plugins: [react()],
   resolve: {
     alias: {
@@ -11,3 +12,8 @@ export default defineConfig({
     },
   },
 })
+
+// "scripts": {
+//   "predeploy": "pnpm run build",
+//   "deploy": "gh-pages -d dist"
+// }

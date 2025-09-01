@@ -81,6 +81,9 @@ const MAGPIE_CONFIG: MagpieConfig = {
   environment: (process.env.NODE_ENV === 'production' ? 'production' : 'sandbox') as 'sandbox' | 'production'
 };
 
+// Frontend -> Backend base URL (configure via Vite env var VITE_API_BASE)
+const API_BASE = (import.meta?.env?.VITE_API_BASE as string) || 'https://drl-solutions-website.onrender.com';
+
 // Available Payment Methods (following official examples)
 export const PAYMENT_METHODS: PaymentMethod[] = [
   {
@@ -197,12 +200,10 @@ class MagpiePaymentService {
       };
 
       // Make API call to Magpie.im
-      const response = await fetch(`${this.config.baseUrl}/v1/checkout/sessions`, {
+  const response = await fetch(`${API_BASE}/api/checkout-session`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.apiKey}`,
-          'X-Magpie-Version': '2024-01-01'
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify(sessionPayload)
       });
@@ -241,13 +242,7 @@ class MagpiePaymentService {
     try {
       console.log('🔍 Checking payment status for session:', sessionId);
 
-      const response = await fetch(`${this.config.baseUrl}/v1/checkout/sessions/${sessionId}`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${this.config.apiKey}`,
-          'X-Magpie-Version': '2024-01-01'
-        }
-      });
+  const response = await fetch(`${API_BASE}/api/payment-status/${sessionId}`);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));

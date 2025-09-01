@@ -1,0 +1,44 @@
+name: Deploy shadcn-ui to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'pnpm'
+
+      - name: Enable pnpm via Corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@8.10.0 --activate
+
+      - name: Install dependencies (shadcn-ui)
+        run: |
+          cd shadcn-ui
+          pnpm install --frozen-lockfile
+
+      - name: Build (shadcn-ui)
+        env:
+          VITE_API_BASE: ${{ secrets.API_BASE }}
+        run: |
+          cd shadcn-ui
+          pnpm run build
+
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: shadcn-ui/dist
+          token: ${{ secrets.GITHUB_TOKEN }}
+          clean: true
+          commit-message: 'chore: deploy shadcn-ui to gh-pages'
