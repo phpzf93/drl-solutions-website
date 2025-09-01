@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: magpie-backend
+    env: node
+    root: magpie-backend
+    buildCommand: pnpm install
+    startCommand: pnpm start
