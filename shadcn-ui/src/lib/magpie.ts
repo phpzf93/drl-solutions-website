@@ -74,6 +74,13 @@ export interface WebhookEvent {
   createdAt: string;
 }
 
+// Extended error shape used for attaching debug info from backend responses
+type ExtendedError = Error & {
+  status?: number;
+  correlation?: string | null;
+  upstream?: unknown;
+};
+
 // Magpie.im Configuration
 const MAGPIE_CONFIG: MagpieConfig = {
   apiKey: process.env.NEXT_PUBLIC_MAGPIE_API_KEY || 'demo_key',
@@ -209,8 +216,15 @@ class MagpiePaymentService {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
+  const errorData = await response.json().catch(() => ({}));
+  const correlation = response.headers?.get?.('x-correlation-id') || null;
+  const detail = errorData?.details || errorData?.message || errorData?.error || `${response.status}: ${response.statusText}`;
+  const err = new Error(detail) as ExtendedError;
+  // attach useful debug info without leaking secrets
+  err.status = response.status;
+  err.correlation = correlation;
+  err.upstream = errorData;
+  throw err;
       }
 
       const data = await response.json();
@@ -245,8 +259,14 @@ class MagpiePaymentService {
   const response = await fetch(`${API_BASE}/api/payment-status/${sessionId}`);
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
+  const errorData = await response.json().catch(() => ({}));
+  const correlation = response.headers?.get?.('x-correlation-id') || null;
+  const detail = errorData?.details || errorData?.message || errorData?.error || `${response.status}: ${response.statusText}`;
+  const err = new Error(detail) as ExtendedError;
+  err.status = response.status;
+  err.correlation = correlation;
+  err.upstream = errorData;
+  throw err;
       }
 
       const data = await response.json();
@@ -354,13 +374,4 @@ export const verifyPayment = (paymentId: string) =>
   magpiePayment.getPaymentStatus(paymentId);
 
 // Export types for external use
-export type {
-  MagpieConfig,
-  PaymentMethod,
-  CustomerInfo,
-  PaymentItem,
-  CheckoutSessionRequest,
-  CheckoutSessionResponse,
-  PaymentStatus,
-  WebhookEvent
-};
+// types are exported inline above via `export interface ...`
