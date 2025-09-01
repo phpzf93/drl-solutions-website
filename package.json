@@ -1,0 +1,9 @@
+{
+  "name": "drl-solutions-monorepo",
+  "private": true,
+  "packageManager": "pnpm@8.10.0",
+  "workspaces": [
+    "magpie-backend",
+    "shadcn-ui"
+  ]
+}
